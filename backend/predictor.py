@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 import joblib
 import numpy as np
+import tensorflow as tf
 
 
 @dataclass
@@ -14,7 +15,7 @@ class InferenceArtifacts:
     feature_pipeline: Any
     l1_selector: Any
     label_encoder: Any
-    classifier: Any
+    model: tf.keras.Model
     artifact_dir: Path
 
 
@@ -37,9 +38,10 @@ class SpamPredictor:
 
         x_selected = self.art.l1_selector.transform(x).astype(np.float32)
 
-        proba_spam = float(self.art.classifier.predict_proba(x_selected)[0][1])
+        proba_spam = float(self.art.model.predict(x_selected, verbose=0).ravel()[0])
         proba_spam = max(0.0, min(1.0, proba_spam))
 
+        # Temperature scaling to reduce overconfidence
         temperature = 2.5
         logit = np.log(proba_spam / (1 - proba_spam + 1e-10))
         proba_spam = float(1 / (1 + np.exp(-logit / temperature)))
@@ -66,27 +68,29 @@ class SpamPredictor:
         out_dir = Path(artifact_dir) if artifact_dir else (project_root / "outputs_dl")
 
         pipeline_path = out_dir / "pipeline.pkl"
+        model_path = out_dir / "model.h5"
 
-        if not pipeline_path.exists():
-            raise FileNotFoundError(f"Missing: {pipeline_path}")
+        missing_files = [str(p) for p in [pipeline_path, model_path] if not p.exists()]
+        if missing_files:
+            raise FileNotFoundError(
+                "Missing required artifact(s): " + ", ".join(missing_files)
+            )
 
         pipeline_obj = joblib.load(pipeline_path)
 
         feature_pipeline = pipeline_obj.get("feature_pipeline")
         l1_selector = pipeline_obj.get("l1_selector")
         label_encoder = pipeline_obj.get("label_encoder")
-        classifier = pipeline_obj.get("classifier")
 
         if feature_pipeline is None or l1_selector is None:
             raise ValueError("pipeline.pkl is missing required objects.")
 
-        if classifier is None:
-            raise ValueError("No classifier found. Run retrain.py first.")
+        model = tf.keras.models.load_model(str(model_path))
 
         return InferenceArtifacts(
             feature_pipeline=feature_pipeline,
             l1_selector=l1_selector,
             label_encoder=label_encoder,
-            classifier=classifier,
+            model=model,
             artifact_dir=out_dir,
         )
